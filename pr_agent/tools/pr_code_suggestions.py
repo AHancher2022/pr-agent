@@ -9,7 +9,7 @@ from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.pr_processing import get_pr_diff, get_pr_multi_diffs, retry_with_fallback_models
 from pr_agent.algo.token_handler import TokenHandler
-from pr_agent.algo.utils import load_yaml, replace_code_tags, ModelType, show_relevant_configurations
+from pr_agent.algo.utils import load_yaml, replace_code_tags, ModelType, show_relevant_configurations, get_min_tokens
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import get_git_provider, get_git_provider_with_context, GithubProvider, GitLabProvider, \
     AzureDevopsProvider
@@ -296,7 +296,13 @@ class PRCodeSuggestions:
                                         add_line_numbers_to_hunks=True,
                                         disable_extra_lines=False)
 
-        if self.patches_diff:
+        minimumTokenVariable = self.token_handler.count_tokens(self.patches_diff)
+        # load suggestions from the AI response
+
+        if get_min_tokens() is not None and minimumTokenVariable <= get_min_tokens():
+            get_logger().info(f"Tokens: {minimumTokenVariable}, This is to small of a diff to send to the LLM, returning")
+            self.prediction = {"code_suggestions": []}
+        elif self.patches_diff:
             get_logger().debug(f"PR diff", artifact=self.patches_diff)
             self.prediction = await self._get_prediction(model, self.patches_diff)
         else:
@@ -508,8 +514,18 @@ class PRCodeSuggestions:
             get_logger().info(f"Number of PR chunk calls: {len(self.patches_diff_list)}")
             get_logger().debug(f"PR diff:", artifact=self.patches_diff_list)
 
+            minimumTokenVariable = 0
+
+            for patches_diff in self.patches_diff_list:
+                minimumTokenVariable += self.token_handler.count_tokens(patches_diff)
+            get_logger().info(f"Number of PR tokens: {minimumTokenVariable}")
+
+            # dont send to the AI if the PR tokens are to small
+            if get_min_tokens() is not None and minimumTokenVariable <= get_min_tokens():
+                get_logger().info(f"Tokens: {minimumTokenVariable}, This is to small of a diff, going to return")
+                self.prediction_list = None
             # parallelize calls to AI:
-            if get_settings().pr_code_suggestions.parallel_calls:
+            elif get_settings().pr_code_suggestions.parallel_calls:
                 prediction_list = await asyncio.gather(
                     *[self._get_prediction(model, patches_diff) for patches_diff in self.patches_diff_list])
                 self.prediction_list = prediction_list
@@ -520,24 +536,27 @@ class PRCodeSuggestions:
                     prediction_list.append(prediction)
 
             data = {"code_suggestions": []}
-            for j, predictions in enumerate(prediction_list):  # each call adds an element to the list
-                if "code_suggestions" in predictions:
-                    score_threshold = max(1, int(get_settings().pr_code_suggestions.suggestions_score_threshold))
-                    for i, prediction in enumerate(predictions["code_suggestions"]):
-                        try:
-                            if get_settings().pr_code_suggestions.self_reflect_on_suggestions:
-                                score = int(prediction["score"])
-                                if score >= score_threshold:
-                                    data["code_suggestions"].append(prediction)
+            if self.prediction_list is None:
+                self.data = data = None
+            else:
+                for j, predictions in enumerate(prediction_list):  # each call adds an element to the list
+                    if "code_suggestions" in predictions:
+                        score_threshold = max(1, int(get_settings().pr_code_suggestions.suggestions_score_threshold))
+                        for i, prediction in enumerate(predictions["code_suggestions"]):
+                            try:
+                                if get_settings().pr_code_suggestions.self_reflect_on_suggestions:
+                                    score = int(prediction["score"])
+                                    if score >= score_threshold:
+                                        data["code_suggestions"].append(prediction)
+                                    else:
+                                        get_logger().info(
+                                            f"Removing suggestions {i} from call {j}, because score is {score}, and score_threshold is {score_threshold}",
+                                            artifact=prediction)
                                 else:
-                                    get_logger().info(
-                                        f"Removing suggestions {i} from call {j}, because score is {score}, and score_threshold is {score_threshold}",
-                                        artifact=prediction)
-                            else:
-                                data["code_suggestions"].append(prediction)
-                        except Exception as e:
-                            get_logger().error(f"Error getting PR diff for suggestion {i} in call {j}, error: {e}")
-            self.data = data
+                                    data["code_suggestions"].append(prediction)
+                            except Exception as e:
+                                get_logger().error(f"Error getting PR diff for suggestion {i} in call {j}, error: {e}")
+                self.data = data
         else:
             get_logger().warning(f"Empty PR diff list")
             self.data = data = None

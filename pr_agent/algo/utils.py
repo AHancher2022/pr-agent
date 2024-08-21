@@ -722,6 +722,12 @@ def get_max_tokens(model):
         max_tokens_model = min(settings.config.max_model_tokens, max_tokens_model)
     return max_tokens_model
 
+def get_min_tokens():
+    settings = get_settings()
+    if settings.config.minimum_tokens:
+        return settings.config.minimum_tokens
+    return None
+
 
 def clip_tokens(text: str, max_tokens: int, add_three_dots=True, num_input_tokens=None, delete_last_line=False) -> str:
     """

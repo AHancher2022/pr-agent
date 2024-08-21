@@ -19,6 +19,8 @@ max_description_tokens = 500
 max_commits_tokens = 500
 max_model_tokens = 32000 # Limits the maximum number of tokens that can be used by any model, regardless of the model's default capabilities.
 custom_model_max_tokens=-1 # for models not in the default list
+# Minimum tokens for sending to LLM
+minimum_tokens = 250
 # patch extension logic
 patch_extension_skip_types =[".md",".txt"]
 allow_dynamic_context=false
